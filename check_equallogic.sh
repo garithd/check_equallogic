@@ -66,6 +66,7 @@
 # 20140626 Bugfix in etherrors check                                           #
 # 20140711 Added snmp connection check function                                #
 # 20150203 Bugfix in vol check in percentage calculation                       #
+# 20150622 Added iscsireplication and containerreplication function
 ################################################################################
 # Usage: ./check_equallogic -H host -C community -t type [-v volume] [-w warning] [-c critical]
 ################################################################################
@@ -90,7 +91,9 @@ snapshots -> Checks Snapshot Reserve status (warning level is taken from the equ
 temp -> Checks Temperature sensors
 uptime -> Shows uptime
 vol -> Checks a single volume, must be used with -v option (if no thresholds are given, outputs information)
-volumes -> Checks utilization of all ISCSI volumes (if no thresholds are given, outputs information)"
+volumes -> Checks utilization of all ISCSI volumes (if no thresholds are given, outputs information)
+iscsireplication -> Checks status of replication for all non-system iscsi volumes
+containerreplication -> Checks status of replication for all containers"
 
 STATE_OK=0              # define the exit code if status is OK
 STATE_WARNING=1         # define the exit code if status is Warning
@@ -864,6 +867,83 @@ if [ -n "${warning}" ] || [ -n "${critical}" ]
 else echo "OK - Volume ${volume} used ${humanusedspace}GB of ${humanavailspace}GB (${volpercentage}%)|'volavail'=${perfavailspace}, 'volused'=${perfusedspace}"
 exit ${STATE_OK}
 fi
+;;
+
+# --- iscsi replication ---
+
+iscsireplication)
+replicated_volumes=$(snmpwalk -v2c  -On -c ${community} ${host} .1.3.6.1.4.1.12740.5.1.7.16.1.1 | cut -d" " -f1 | cut -d. -f15-16)
+
+MSG=""
+SNMPSTATE=""
+
+for id in $replicated_volumes ; do
+        VOLUME=$(snmpwalk -v2c -Onqve -c ${community} ${host} .1.3.6.1.4.1.12740.5.1.7.1.1.4.$id)
+        SNMPSTATE=$(snmpwalk -v2c -Onvqe -c ${community} ${host} .1.3.6.1.4.1.12740.5.1.7.16.1.1.$id)
+
+        if [ $SNMPSTATE = 1 ] ; then MSG="$MSG WARNING: $VOLUME = disabled " ; fi
+        if [ $SNMPSTATE = 2 ] ; then MSG="$MSG OK: $VOLUME = inProgress " ; fi
+        if [ $SNMPSTATE = 3 ] ; then MSG="$MSG OK: $VOLUME = waiting " ; fi
+        if [ $SNMPSTATE = 4 ] ; then MSG="$MSG CRITICAL: $VOLUME = farEndDown " ; fi
+        if [ $SNMPSTATE = 5 ] ; then MSG="$MSG CRITICAL: $VOLUME = authFailure"  ; fi
+        if [ $SNMPSTATE = 6 ] ; then MSG="$MSG OK: $VOLUME = completed " ; fi
+        if [ $SNMPSTATE = 7 ] ; then MSG="$MSG WARNING: $VOLUME = paused " ; fi
+        if [ $SNMPSTATE = 8 ] ; then MSG="$MSG CRITICAL: $VOLUME = remoteResizeFailed " ; fi
+        if [ $SNMPSTATE = 9 ] ; then MSG="$MSG WARNING: $VOLUME = remotePaused " ; fi
+        if [ $SNMPSTATE = 10 ] ; then MSG="$MSG WARNING: $VOLUME = partnerPausedLocal " ; fi
+        if [ $SNMPSTATE = 11 ] ; then MSG="$MSG CRITICAL: $VOLUME = failed " ; fi
+        if [ $SNMPSTATE = 12 ] ; then MSG="$MSG WARNING: $VOLUME = remoteReplReserveLow " ; fi
+        if [ $SNMPSTATE = 13 ] ; then MSG="$MSG CRITICAL: $VOLUME = nomoresnapallowed " ; fi
+        if [ $SNMPSTATE = 14 ] ; then MSG="$MSG CRITICAL: $VOLUME = remoteReplReserveInvalid " ; fi
+        if [ $SNMPSTATE = 15 ] ; then MSG="$MSG WARNING: $VOLUME = cancelling " ; fi
+        if [ $SNMPSTATE = 16 ] ; then MSG="$MSG WARNING: $VOLUME = pendingDataTransfer " ; fi
+        if [ $SNMPSTATE = 17 ] ; then MSG="$MSG OK: $VOLUME = manualDataTransferInProgress " ; fi
+        if [ $SNMPSTATE = 18 ] ; then MSG="$MSG WARNING: $VOLUME = remoteDisallowDowngradesNotSet " ; fi
+        if [ $SNMPSTATE = 19 ] ; then MSG="$MSG CRITICAL: $VOLUME = remotePartnerNeedsUpgrade " ; fi
+done
+
+if [ -n "$(echo -n $MSG | grep "CRITICAL")" ] ; then echo $MSG ; exit 2 ; fi
+if [ -n "$(echo -n $MSG | grep "WARNING")" ] ; then echo $MSG ; exit 1 ; fi
+if [ -n "$(echo -n $MSG | grep "OK")" ] ; then echo $MSG ; exit 0 ; fi
+;;
+
+# --- containerreplication ---
+
+containerreplication)
+containerids=$(snmpwalk -v2c -On -c ${community} ${host} .1.3.6.1.4.1.12740.18.1.3.1.3.1 | cut -d" " -f1 | cut -d. -f15)
+MSG=""
+SNMPSTATE=""
+
+for id in $containerids ; do
+        CONTAINERNAME=$(snmpwalk -v2c -Onvqe -c ${community} ${host} .1.3.6.1.4.1.12740.18.1.3.1.3.1.$id)
+        SNMPSTATE=$(snmpwalk -v2c -Onvqe -c ${community} ${host} .1.3.6.1.4.1.12740.18.1.27.1.11.1.$id)
+
+        if [ -n "$SNMPSTATE" ] ; then
+
+        if [ $SNMPSTATE = 0 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = unknown " ; fi
+        if [ $SNMPSTATE = 1 ] ; then MSG="$MSG OK: "$CONTAINERNAME" = idle " ; fi
+        if [ $SNMPSTATE = 2 ] ; then MSG="$MSG OK: "$CONTAINERNAME" = active " ; fi
+        if [ $SNMPSTATE = 3 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = waitingretry " ; fi
+        if [ $SNMPSTATE = 4 ] ; then MSG="$MSG CRITICAL: "$CONTAINERNAME" = failed "  ; fi
+        if [ $SNMPSTATE = 5 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = paused " ; fi
+        if [ $SNMPSTATE = 6 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = cancelled " ; fi
+        if [ $SNMPSTATE = 7 ] ; then MSG="$MSG OK: "$CONTAINERNAME" = resuming " ; fi
+        if [ $SNMPSTATE = 8 ] ; then MSG="$MSG OK: "$CONTAINERNAME" = deleting " ; fi
+        if [ $SNMPSTATE = 9 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = pausing " ; fi
+        if [ $SNMPSTATE = 10 ] ; then MSG="$MSG OK: "$CONTAINERNAME" = finished " ; fi
+        if [ $SNMPSTATE = 11 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = cancelling " ; fi
+        if [ $SNMPSTATE = 12 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = promoted " ; fi
+        if [ $SNMPSTATE = 13 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = promoting " ; fi
+        if [ $SNMPSTATE = 14 ] ; then MSG="$MSG OK: "$CONTAINERNAME" = idlewaittoschedule " ; fi
+        if [ $SNMPSTATE = 15 ] ; then MSG="$MSG WARNING: "$CONTAINERNAME" = demoting " ; fi
+
+        fi
+
+done
+
+if [ -n "$(echo -n $MSG | grep "CRITICAL")" ] ; then echo $MSG ; exit 2 ; fi
+if [ -n "$(echo -n $MSG | grep "WARNING")" ] ; then echo $MSG ; exit 1 ; fi
+if [ -n "$(echo -n $MSG | grep "OK")" ] ; then echo $MSG ; exit 0 ; fi
 ;;
 
 # --- snapshots --- #
